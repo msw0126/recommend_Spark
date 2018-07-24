@@ -1,0 +1,96 @@
+HIVE建表过程：
+
+1 电影数据集
+CREATE TABLE mite8.mite_movies (
+  movieId string COMMENT '电影ID',
+  title string COMMENT '电影标题',
+  genre string COMMENT '微信名称'
+  )comment '电影数据集'
+   ROW FORMAT DELIMITED
+   FIELDS TERMINATED BY '\t'
+    STORED AS TEXTFILE;
+   
+2 用户对电影的评分
+CREATE TABLE mite8.mite_ratings (
+  userId string COMMENT '用户id',
+  movieId string COMMENT '电影ID',
+  rate decimal(3,1) COMMENT '用户userId给电影movieId的打分',
+  timestame string COMMENT '记录时间戳'
+  )comment '用户对电影的打分数据'
+   ROW FORMAT DELIMITED
+   FIELDS TERMINATED BY '\t'
+   STORED AS TEXTFILE;
+
+3 电影标签数据
+CREATE TABLE mite8.mite_tags (
+  userId string COMMENT '用户id',
+  movieId string COMMENT '电影ID',
+  tag string COMMENT 'tag为用户userId给电影movieId打的标签',
+  timestame string COMMENT '记录时间戳'
+  )comment '电影标签数据'
+   ROW FORMAT DELIMITED
+   FIELDS TERMINATED BY '\t'
+   STORED AS TEXTFILE;
+   
+5 基于内容属性推荐结果表
+CREATE TABLE mite8.mite_content_base_re (
+  movieId string COMMENT '当前电影id',
+  movieId_re string COMMENT '待推荐电影id',
+  score decimal(10,6) COMMENT '推荐评分'
+  )comment '基于内容属性的推荐结果表'
+   ROW FORMAT DELIMITED
+   FIELDS TERMINATED BY '\t'
+   STORED AS TEXTFILE;
+
+6 基于用户画像推荐结果表
+CREATE TABLE mite8.mite_portrait_base_re (
+  userid string COMMENT '当前用户ID',
+  movieid string COMMENT '待推荐电影id',
+  score decimal(10,6) COMMENT '推荐评分'
+  )comment '基于用户画像的推荐结果表'
+   ROW FORMAT DELIMITED
+   FIELDS TERMINATED BY '\t'
+   STORED AS TEXTFILE;
+   
+7 基于Item的协同推荐结果表
+CREATE TABLE mite8.mite_item_base_re (
+  userid string COMMENT '当前用户ID',
+  movieid string COMMENT '待推荐电影id',
+  score decimal(10,6) COMMENT '推荐评分'
+  )comment '基于ITEM协同过滤的推荐结果表'
+   ROW FORMAT DELIMITED
+   FIELDS TERMINATED BY '\t'
+   STORED AS TEXTFILE;
+
+8 基于user的协同推荐结果表
+CREATE TABLE mite8.mite_user_base_re (
+  userid string COMMENT '当前用户ID',
+  movieid string COMMENT '待推荐电影id',
+  score decimal(10,6) COMMENT '推荐评分'
+  )comment '基于USER协同过滤的推荐结果表'
+   ROW FORMAT DELIMITED
+   FIELDS TERMINATED BY '\t'
+   STORED AS TEXTFILE;
+   
+9 基于ALS的协同推荐结果表
+CREATE TABLE mite8.mite_als_base_re (
+  userid string COMMENT '当前用户ID',
+  movieid string COMMENT '待推荐电影id',
+  score decimal(10,6) COMMENT '推荐评分'
+  )comment '基于ALS协同过滤的推荐结果表'
+   ROW FORMAT DELIMITED
+   FIELDS TERMINATED BY '\t'
+   STORED AS TEXTFILE;
+   
+-------------------   
+1 MySQL-画像可视化 建表
+CREATE TABLE `mite_portrait_1_100` (
+  `userid` int(11) DEFAULT NULL COMMENT '用户id',
+  `tag` varchar(80) DEFAULT NULL COMMENT '用户画像兴趣tag',
+  `rate` double DEFAULT NULL COMMENT '画像兴趣标签评分'
+) ENGINE=InnoDB DEFAULT CHARSET=utf8
+
+
+
+
+
