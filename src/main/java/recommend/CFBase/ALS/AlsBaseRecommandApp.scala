@@ -1,14 +1,12 @@
 package recommend.CFBase.ALS
 
+import org.apache.spark.SparkConf
 import org.apache.spark.mllib.recommendation.{ALS, MatrixFactorizationModel, Rating}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.types._
-import org.apache.spark.sql.{Row, SparkSession}
+import org.apache.spark.sql.{Row, SaveMode, SparkSession}
 
 /**
-  * 作者：blogchong
-  * 公众号: 数据虫巢(ID:blogchong)
-  * 交流微信：mute88
   * Desc: 基于ALS的协同过滤，对用户进行电影推荐
   */
 object AlsBaseRecommandApp {
@@ -17,33 +15,44 @@ object AlsBaseRecommandApp {
 
     //设置hive访问host以及端口  hadoop9
     //注意：实际使用的时候，替换成自己服务器集群中，hive的host以及访问端口
-    val HIVE_METASTORE_URIS = "thrift://hive-host-01:9083,thrift://hive-host-02:9083"
-    System.setProperty("hive.metastore.uris", HIVE_METASTORE_URIS)
+//    val HIVE_METASTORE_URIS = "thrift://hive-host-01:9083,thrift://hive-host-02:9083"
+//    System.setProperty("hive.metastore.uris", HIVE_METASTORE_URIS)
+    System.setProperty("HADOOP_USER_NAME", "hdfs")
 
     //构建一个通用的sparkSession
+    //local 模式
+//    val sparkConf = new SparkConf().setAppName("als-base-re").setMaster("local[*]")
+//    val sparkSession = SparkSession.builder()
+//      .config(sparkConf)
+//      .enableHiveSupport()
+//      .getOrCreate()
+//    System.setProperty("spark.local.dir", "F:\\tools\\Spark\\SPARK_LOCAL_DIRS")
+
+    //yarn 模式
     val sparkSession = SparkSession
       .builder()
       .appName("als-base-re")
       .enableHiveSupport()
       .getOrCreate()
 
+    val sc = sparkSession.sparkContext
     //获取rating评分数据集并转换为RDD，鉴于机器配置，降低数据量
     val ratingDataOrc = sparkSession.sql("select userid,movieid,rate,timestame  from mite8.mite_ratings limit 50000")
-
+//    ratingDataOrc.show()
     //装载样本评分数据，最后一列Timestamp去除10余数作为key，Rating为值，即(Int, Ratings)
     //输出的结果是一个key-value集合，其中key为时间取余，value是Rating对象
     val ratings = ratingDataOrc.rdd.map(f =>
       (java.lang.Long.parseLong(f.get(3).toString)%10,
       Rating(java.lang.Integer.parseInt(f.get(0).toString),
         java.lang.Integer.parseInt(f.get(1).toString),
-        f.get(2).asInstanceOf[java.math.BigDecimal].doubleValue())))
+        scala.math.BigDecimal(f.get(2).toString).doubleValue())))
 
     // 筛选用户评分数据，并将该用户作为最终的目标推荐用户
     val personalRatingsData = ratingDataOrc.where("userid = 1").rdd.map{
       f=>
         Rating(java.lang.Integer.parseInt(f.get(0).toString),
           java.lang.Integer.parseInt(f.get(1).toString),
-          f.get(2).asInstanceOf[java.math.BigDecimal].doubleValue())
+          scala.math.BigDecimal(f.get(2).toString).doubleValue())
     }
 
     //装载电影电影目录对照表(电影ID->电影标题),即输出是一个数组集合
@@ -72,9 +81,12 @@ object AlsBaseRecommandApp {
     //通过key(10的余数，均衡分布，所以x._1 < 6基本能够切分出大约60%的数据量)
     val training = ratings.filter(x => x._1 < 6).values
       .union(personalRatingsData).repartition(numPartions).persist()
+//    training.take(10).foreach(println)
     val validation = ratings.filter(x => x._1 >=6 && x._1 < 8).values
       .repartition(numPartions).persist()
+//    validation.take(10).foreach(println)
     val test = ratings.filter(x => x._1 > 8).values.persist()
+//    test.take(10).foreach(println)
 
     //统计各部分的量
     val numTraining = training.count()
@@ -101,6 +113,7 @@ object AlsBaseRecommandApp {
     var count = 0
     //进行三层循环遍历，找最佳的Rmse值，对应的model
     for (rank <- ranks; lambda <- lambdas; numIter <- numIters) {
+//      println(rank, lambda, numIter)
       val model = ALS.train(training, rank, numIter, lambda)
       //计算均根方差值，传入的是model以及校验数据
       val validationRmse = computeRmse(model, validation, numValidation)
@@ -133,6 +146,7 @@ object AlsBaseRecommandApp {
     //创建一个基准衡量标准，并且用最好的模型进行比较
     //获取训练样本+预测样本的rating平均分
     val meanRating = training.union(validation).map(_.rating).mean()
+//    println(meanRating)
     //计算标准差
     val baseLineRmse = math.sqrt(test.map(x => (meanRating - x.rating) * (meanRating - x.rating)).reduce(_+_)/numTest)
     //改进系数
@@ -149,11 +163,12 @@ object AlsBaseRecommandApp {
     val recommendations:RDD[Rating] = bestModel.get.predict(candRDD)
     val recommendations_ = recommendations.collect().sortBy(-_.rating).take(20)
     var i = 1
+//    recommendations_.foreach(println)
 
     println("Movies recommended for you:")
     recommendations_.foreach {
       r =>
-        println("%2d".format(i) + ": [" + r.product + "]")
+        println("%2d".format(i) + ": [" + r.product + "]")  // product 输出元祖内的元素
         i += 1
     }
 
@@ -166,16 +181,14 @@ object AlsBaseRecommandApp {
     //DataFrame格式化申明
     val schemaString = "userid movieid score"
     val schemaAlsBase = StructType(schemaString.split(" ")
-      .map(fieldName=>StructField(fieldName,if (fieldName.equals("score")) DoubleType else  IntegerType,true)))
+      .map(fieldName=>StructField(fieldName, if (fieldName.equals("score")) DoubleType else  IntegerType,true)))
     val movieAlsBaseDataFrame = sparkSession.createDataFrame(alsBaseReDataFrame,schemaAlsBase)
     //将结果存入hive
-    val itemBaseReTmpTableName = "mite_alsbasetmp"
-    val itemBaseReTableName = "mite8.mite_als_base_re"
-    movieAlsBaseDataFrame.registerTempTable(itemBaseReTmpTableName)
-    sparkSession.sql("insert into table " + itemBaseReTableName + " select * from " + itemBaseReTmpTableName)
+    movieAlsBaseDataFrame.repartition(1).toDF().write.mode(SaveMode.Overwrite).saveAsTable("mite8.mite_als_base_re")
 
     System.out.println("=================003 SAVE OK===========================")
 
+    sc.stop()
   }
 
 

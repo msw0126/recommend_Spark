@@ -1,28 +1,34 @@
 package recommend.portraitBase
 
+/**
+  * 根据用户画像返回推荐列表，用户来了，就返回相关的内容
+  */
+
 import com.hankcs.hanlp.HanLP
-import org.apache.spark.sql.types.{DoubleType, StringType, StructField, StructType}
-import org.apache.spark.sql.{Row, SparkSession}
+import org.apache.spark.SparkConf
+import org.apache.spark.sql.types._
+import org.apache.spark.sql.{Row, SaveMode, SparkSession}
 import utils.movieYearRegex
 
 import scala.collection.JavaConversions._
 import scala.util.control.Breaks
 
-/**
-  * 作者：blogchong
-  * 公众号: 数据虫巢(ID:blogchong)
-  * 交流微信：mute88
-  * Desc: 基于用户画像的计算，对用户进行电影推荐
-  */
 object portraitBaseRecommandApp {
   def main(args : Array[String]): Unit = {
 
     //设置hive访问host以及端口  hadoop9
     //注意：实际使用的时候，替换成自己服务器集群中，hive的host以及访问端口
-val HIVE_METASTORE_URIS = "thrift://hive-host-01:9083,thrift://hive-host-02:9083"
-    System.setProperty("hive.metastore.uris", HIVE_METASTORE_URIS)
+//    val HIVE_METASTORE_URIS = "thrift://hive-host-01:9083,thrift://hive-host-02:9083"
+//    System.setProperty("hive.metastore.uris", HIVE_METASTORE_URIS)
 
     //构建一个通用的sparkSession
+    // 本地模式
+//        val sparkConf = new SparkConf().setAppName("portrait-base-re").setMaster("local[*]")
+//        val sparkSession = SparkSession.builder()
+//          .config(sparkConf)
+//          .enableHiveSupport()
+//          .getOrCreate()
+    // yarn模式
     val sparkSession = SparkSession
       .builder()
       .appName("portrait-base-re")
@@ -31,18 +37,25 @@ val HIVE_METASTORE_URIS = "thrift://hive-host-01:9083,thrift://hive-host-02:9083
 
     //获取rating评分数据集
     val ratingData = sparkSession.sql("select userid,movieid,rate  from mite8.mite_ratings")
+//    ratingData.show(100)
 
     //获取用户的年份数据，并在hive中进行抽取，并对相同用户以及年份的进行合并，权重去sum(rate)
+    // (先抽取出这个用户对不同年份的电影的打分总分)
     val userYear = sparkSession.sql("select userid,year,sum(rate) as rate from (select userid,rate,regexp_extract(title,'.*\\\\(([1-9][0-9][0-9][0-9])\\\\).*',1) as year from mite8.mite_ratings aa join mite8.mite_movies bb on aa.movieid = bb.movieid) aaa group by aaa.userid,aaa.year order by userid,rate desc")
+//    userYear.show(100)
 
-    //获取用户的类别偏好数据
+    //获取用户的类别偏好数据,
+    // 抽取出字段"userid|genre|rate",得到用户对不同风格电影的打分情况
     val userGenre = sparkSession.sql("select aa.userid as userid,genre,sum(rate) as rate from mite8.mite_ratings aa join mite8.mite_movies bb on aa.movieid = bb.movieid group by aa.userid,genre order by userid,rate desc")
+//    userGenre.show(100)
 
-    //获取电影数据的基本属性
+    //获取电影数据的基本属性包含评分的均值
     val moviesData = sparkSession.sql("select aa.movieid as movieid,title,genre,avg(bb.rate) as rate from mite8.mite_movies aa join mite8.mite_ratings bb on aa.movieid = bb.movieid group by aa.movieid,aa.title,aa.genre")
+//    moviesData.show(100)
 
     //获取电影tags数据
     val tagsData = sparkSession.sql("select movieid,tag from mite8.mite_tags").rdd
+//    tagsData.take(100).foreach(println)
 
     System.out.println("=================001 GET DATA===========================")
 
@@ -62,6 +75,7 @@ val HIVE_METASTORE_URIS = "thrift://hive-host-01:9083,thrift://hive-host-02:9083
         (movieid,tag)
     }
 
+//    tagsStandardize.take(100).foreach(println)
     System.out.println("=================002.1 HANLP===========================")
 
     //进行相似tag合并操作，最终返回依然是(mvieid,tag)集合，但tag会做预处理
@@ -95,8 +109,12 @@ val HIVE_METASTORE_URIS = "thrift://hive-host-01:9083,thrift://hive-host-02:9083
         }
     }
 
-    System.out.println("=================002.2 TAG SIMI===========================")
+//    tagsSimi.take(100).foreach(println)
 
+    System.out.println("=================002.2 TAG SIMI===========================")
+    // tagsSimi.map(f=>((f._1,f._2),1))  ((54116,Fate),1)
+//    tagsSimi.map(f=>((f._1,f._2),1)).reduceByKey(_+_).take(100).foreach(println)
+//    tagsSimi.map(f=>((f._1,f._2),1)).reduceByKey(_+_).groupBy(k=>k._1._1).take(100).foreach(println)
     //先将预处理之后的movie-tag数据进行，统计频度，作为tag权重,形成(movie,tagList(tag,score))这种数据集
     val movieTagList = tagsSimi.map(f=>((f._1,f._2),1)).reduceByKey(_+_).groupBy(k=>k._1._1).map{
       f=>
@@ -105,7 +123,7 @@ val HIVE_METASTORE_URIS = "thrift://hive-host-01:9083,thrift://hive-host-02:9083
             (ff._1._2,ff._2)
         }.toList.sortBy(_._2).reverse.take(10).toMap)
     }
-
+//    movieTagList.take(100).foreach(println)
     System.out.println("=================002.3 MOVIE-TAG OK===========================")
 
     //进行电影genre以及year属性处理
@@ -114,10 +132,10 @@ val HIVE_METASTORE_URIS = "thrift://hive-host-01:9083,thrift://hive-host-02:9083
         val movieid = f.get(0)
         val genres = f.get(2)
         val year = movieYearRegex.movieYearReg(f.get(1).toString)
-        val rate = f.get(3).asInstanceOf[java.math.BigDecimal].doubleValue()
+        val rate = scala.math.BigDecimal(f.get(3).toString).doubleValue()
         (movieid,(genres,year,rate))
     }
-
+//    moviesGenresYear.take(10).foreach(println)
     System.out.println("=================002.4 MOVIE-GENRE/YEAR OK===========================")
 
     //聚合movie数据,并做过滤排序，排除质量较差的movie候选集，以rate
@@ -127,13 +145,15 @@ val HIVE_METASTORE_URIS = "thrift://hive-host-01:9083,thrift://hive-host-02:9083
         (f._1,f._2._1,f._2._2._1,f._2._2._2,f._2._2._3)
     }.collect()
 
+//    movieContent.foreach(println)
+
     System.out.println("=================003 MOVIE-CONTENT OK===========================")
 
     ///==============Get User Content================////
 
     //先将预处理之后的movie-tag数据进行dataframe
     val schemaString = "movieid tag"
-    val schema = StructType(schemaString.split(" ").map(fieldName=>StructField(fieldName,StringType,true)))
+    val schema = StructType(schemaString.split(" ").map(fieldName=>StructField(fieldName,if (fieldName.equals("movieid")) IntegerType else StringType,true)))
     val tagsSimiDataFrame = sparkSession.createDataFrame(tagsSimi.map(f=>Row(f._1,f._2.toString.trim)),schema)
 
     //对rating(userid,movieid,rate)，tags(movieid,tag)进行join，以movieid关联
@@ -145,7 +165,7 @@ val HIVE_METASTORE_URIS = "thrift://hive-host-01:9083,thrift://hive-host-02:9083
     //reduce步骤：将(userId, tag, rate)中(userId, tag)相同的分数rate相加
     val userPortraitTag = tagRateDataFrame.groupBy("userid","tag").sum("rate").rdd.map{
       f=>
-        (f.get(0),f.get(1),f.get(2).asInstanceOf[java.math.BigDecimal].doubleValue())
+        (f.get(0),f.get(1),scala.math.BigDecimal(f.get(2).toString).doubleValue())
     }.groupBy(f=>f._1).map{
       f=>
         val userid = f._1
@@ -160,7 +180,7 @@ val HIVE_METASTORE_URIS = "thrift://hive-host-01:9083,thrift://hive-host-02:9083
     val userPortraitYear = userYear.rdd.map(f=>(f.get(0),f.get(1),f.get(2))).groupBy(f=>f._1).map{
       f=>
         val userid = f._1
-        val yearList = f._2.map(f=>(f._2,f._3.asInstanceOf[java.math.BigDecimal].doubleValue())).toList.take(10)
+        val yearList = f._2.map(f=>(f._2,scala.math.BigDecimal(f._3.toString).doubleValue())).toList.take(10)
         (userid,yearList)
     }
 
@@ -170,7 +190,7 @@ val HIVE_METASTORE_URIS = "thrift://hive-host-01:9083,thrift://hive-host-02:9083
     val userPortraitGenre = userGenre.rdd.map(f=>(f.get(0),f.get(1),f.get(2))).groupBy(f=>f._1).map{
       f=>
         val userid = f._1
-        val genreList = f._2.map(f=>(f._2,f._3.asInstanceOf[java.math.BigDecimal].doubleValue())).toList.take(10)
+        val genreList = f._2.map(f=>(f._2,scala.math.BigDecimal(f._3.toString).doubleValue())).toList.take(10)
         (userid,genreList)
     }
 
@@ -205,13 +225,11 @@ val HIVE_METASTORE_URIS = "thrift://hive-host-01:9083,thrift://hive-host-02:9083
 
     //保存推荐列表
     val schemaPortraitStr = "userid movieid score"
-    val schemaPortrait = StructType(schemaPortraitStr.split(" ").map(fieldName=>StructField(fieldName,if (fieldName.equals("score")) DoubleType else  StringType,true)))
+    val schemaPortrait = StructType(schemaPortraitStr.split(" ").map(fieldName=>StructField(fieldName,if (fieldName.equals("score")) DoubleType else IntegerType,true)))
     val portraitBaseReDataFrame = sparkSession.createDataFrame(portraitBaseReData.map(f=>Row(f._1,f._2,f._3)),schemaPortrait)
     //将结果存入hive
-    val portraitBaseReTmpTableName = "mite_portraitbasetmp"
-    val portraitBaseReTableName = "mite8.mite_portrait_base_re"
-    portraitBaseReDataFrame.registerTempTable(portraitBaseReTmpTableName)
-    sparkSession.sql("insert into table " + portraitBaseReTableName + " select * from " + portraitBaseReTmpTableName)
+//    portraitBaseReDataFrame.write.mode(SaveMode.Overwrite).format("csv").save("/taoshu/mite_portrait_base_re.csv")
+    portraitBaseReDataFrame.repartition(1).toDF().write.mode(SaveMode.Overwrite).saveAsTable("mite8.mite_portrait_base_re")
 
     System.out.println("=================006 SAVE OK===========================")
 

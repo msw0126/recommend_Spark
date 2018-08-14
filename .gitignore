@@ -1,0 +1,6 @@
+/dataset
+/target
+/metastore_db
+/out
+/spark-model
+/spark-warehouse

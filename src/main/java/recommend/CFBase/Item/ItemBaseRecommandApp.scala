@@ -1,12 +1,10 @@
 package recommend.CFBase.Item
 
+import org.apache.spark.SparkConf
 import org.apache.spark.sql.types._
-import org.apache.spark.sql.{Row, SparkSession}
+import org.apache.spark.sql.{Row, SaveMode, SparkSession}
 
 /**
-  * 作者：blogchong
-  * 公众号: 数据虫巢(ID:blogchong)
-  * 交流微信：mute88
   * Desc: 基于Item的协同过滤，对用户进行电影推荐
   */
 object ItemBaseRecommandApp {
@@ -14,40 +12,60 @@ object ItemBaseRecommandApp {
 
     //设置hive访问host以及端口  hadoop9
     //注意：实际使用的时候，替换成自己服务器集群中，hive的host以及访问端口
-val HIVE_METASTORE_URIS = "thrift://hive-host-01:9083,thrift://hive-host-02:9083"
-    System.setProperty("hive.metastore.uris", HIVE_METASTORE_URIS)
+//    val HIVE_METASTORE_URIS = "thrift://hive-host-01:9083,thrift://hive-host-02:9083"
+//    System.setProperty("hive.metastore.uris", HIVE_METASTORE_URIS)
+    System.setProperty("HADOOP_USER_NAME", "hdfs")
+    System.setProperty("java.util.Arrays.useLegacyMergeSort", "true")
 
     //构建一个通用的sparkSession
-    val sparkSession = SparkSession
-      .builder()
-      .appName("item-base-re")
+    //local 模式
+    val sparkConf = new SparkConf().setAppName("item-base-re").setMaster("local[*]")
+    val sparkSession = SparkSession.builder()
+      .config(sparkConf)
       .enableHiveSupport()
       .getOrCreate()
+    System.setProperty("spark.local.dir", "F:\\tools\\Spark\\SPARK_LOCAL_DIRS")
+    System.setProperty("hadoop.home.dir", "F:\\tools\\Spark\\hadoop-2.7.5\\")
 
+    // yarn
+//    val sparkSession = SparkSession
+//      .builder()
+//      .appName("item-base-re")
+//      .enableHiveSupport()
+//      .getOrCreate()
+
+    val sc = sparkSession.sparkContext
     //获取rating评分数据集并转换为RDD，鉴于机器配置，降低数据量
     val ratingData = sparkSession.sql("select userid,movieid,rate  from mite8.mite_ratings limit 50000")
-      .rdd.map(f=>(java.lang.Long.parseLong(f.get(0).toString),java.lang.Long.parseLong(f.get(1).toString),f.get(2).asInstanceOf[java.math.BigDecimal].doubleValue()))
+      .rdd.map(f=>(java.lang.Long.parseLong(f.get(0).toString),java.lang.Long.parseLong(f.get(1).toString),scala.math.BigDecimal(f.get(2).toString).doubleValue()))
+    ratingData.take(10).foreach(println)
 
     System.out.println("=================001 GET DATA OK===========================")
 
     //过滤多于的(user,item,rate),卡 (best-loved) 100上限，降低计算量
-    val ratings = ratingData.groupBy(k=>k._1).flatMap(f=>f._2.toList.sortWith((f,y)=>f._3>y._3).take(100))
+    val ratings = ratingData.groupBy(k=>k._1).flatMap(f=>f._2.toList.sortWith((f,y)=>f._3>y._3).take(100))  // 倒排序
+//    ratings.take(10).foreach(println)
 
     // 获取每个电影的评分数量,把key为item对应的id,把格式转换为 (item,(user,item,rate))
     val item2manyUser = ratings.groupBy(tup => tup._2)
-    val numRatersPerItem = item2manyUser.map(grouped => (grouped._1, grouped._2.size))
+//    item2manyUser.take(10).foreach(println)
+    val numRatersPerItem = item2manyUser.map(grouped => (grouped._1, grouped._2.size))  // 返回(item, item_result_num)
+//    numRatersPerItem.take(10).foreach(println)
 
     // 通过item id进行关联,转换为 (user,item,rate,numRaters)
     val ratingsWithSize = item2manyUser.join(numRatersPerItem).
       flatMap(joined => {
         joined._2._1.map(f => (f._1, f._2, f._3, joined._2._2))
       })
+//    ratingsWithSize.take(10).foreach(println)
 
     // 为形成自身join矩阵，通过keyby进行获取
     val ratings2 = ratingsWithSize.keyBy(tup => tup._1)
+//    ratings2.take(10).foreach(println)
 
-    //通过上一步获取的自身矩阵，计算半矩阵，减少计算量
+    //通过上一步获取的自身矩阵，计算半矩阵，减少计算量。只取出一半的数据
     val ratingPairs =ratings2.join(ratings2).filter(f => f._2._1._2 < f._2._2._2)
+//    ratingPairs.take(10).foreach(println)
 
     System.out.println("=================002 METRICS OK===========================")
 
@@ -65,6 +83,7 @@ val HIVE_METASTORE_URIS = "thrift://hive-host-01:9083,thrift://hive-host-02:9083
             data._2._2._4)                // number of raters item 2
         (key, stats)
       })
+//    tempVectorCalcs.take(10).foreach(println)
     val vectorCalcs = tempVectorCalcs.groupByKey().map(data => {
       val key = data._1
       val vals = data._2
@@ -78,8 +97,11 @@ val HIVE_METASTORE_URIS = "thrift://hive-host-01:9083,thrift://hive-host-02:9083
       val numRaters2 = vals.map(f => f._7).max
       (key, (size, dotProduct, ratingSum, rating2Sum, ratingSq, rating2Sq, numRaters, numRaters2))
     })
+//    vectorCalcs.take(10).foreach(println)
     val inverseVectorCalcs = vectorCalcs.map(x=>((x._1._2,x._1._1),(x._2._1,x._2._2,x._2._4,x._2._3,x._2._6,x._2._5,x._2._8,x._2._7)))
+//    inverseVectorCalcs.take(10).foreach(println)
     val vectorCalcsTotal = vectorCalcs ++ inverseVectorCalcs
+//    vectorCalcsTotal.take(10).foreach(println)
 
     // 转换公式: cosSim *size/(numRaters*math.log10(numRaters2+10))
     val tempSimilarities =
@@ -89,29 +111,35 @@ val HIVE_METASTORE_URIS = "thrift://hive-host-01:9083,thrift://hive-host-02:9083
         val cosSim = cosineSimilarity(dotProduct, scala.math.sqrt(ratingNormSq), scala.math.sqrt(rating2NormSq))*size/(numRaters*math.log10(numRaters2+10))
         (key._1,(key._2, cosSim))
       })
-
+//    tempSimilarities.take(10).foreach(println)
     val similarities = tempSimilarities.groupByKey().flatMap(x=>{
       x._2.map(temp=>(x._1,(temp._1,temp._2))).toList.sortWith((a,b)=>a._2._2>b._2._2).take(50)
     })
+//    similarities.take(10).foreach(println)
 
     /////////////////////////////////////////////////////////////
 
     // 转换数据为 (item,(user,rate))
     val ratingsInverse = ratings.map(rating=>(rating._2,(rating._1,rating._3)))
+//    println("表A：")
+    //    ratingsInverse.take(10).foreach(println)
+    //    println("表B：")
+    //    similarities.take(10).foreach(println)
 
-    //进一步转换数据 ((user,item),(sim,sim*rating))
-    // ratingsInverse.join(similarities) 变为格式 (Item,((user,rate),(item,similar)))的数据形态
-    val statistics = ratingsInverse.join(similarities)
-      .map(x=>((x._2._1._1,x._2._2._1),(x._2._2._2,x._2._1._2*x._2._2._2)))
+//    进一步转换数据 ((user,item),(sim,sim*rating))
+//     ratingsInverse.join(similarities) 变为格式 (Item,((user,rate),(item,similar)))的数据形态
+    val statistics = ratingsInverse.join(similarities).map(x=>((x._2._1._1,x._2._2._1),(x._2._2._2,x._2._1._2*x._2._2._2)))
+//    statistics.take(10).foreach(println)
 
     // 推测的结果数据((user,item),predict)
     val predictResult = statistics.reduceByKey((x,y)=>((x._1+y._1),(x._2+y._2)))
       .map(x=>(x._1,x._2._2/x._2._1))
+//    predictResult.take(10).foreach(println)
 
-    //进行结果过滤，看过的不需要再进行推荐
+//    进行结果过滤，看过的不需要再进行推荐
     val filterItem = ratingData.map(x=>((x._1,x._2),Double.NaN))
     val totalScore = predictResult ++ filterItem
-
+    totalScore.take(10).foreach(println)
     //最终结果进行裁剪
     val itemBaseDataFrame = totalScore.reduceByKey(_+_).filter(x=> !(x._2 equals(Double.NaN))).
       map(x=>(x._1._1,x._1._2,x._2)).groupBy(x=>x._1).map{
@@ -121,6 +149,8 @@ val HIVE_METASTORE_URIS = "thrift://hive-host-01:9083,thrift://hive-host-02:9083
           (userid,movieReList)
       }.flatMap(y=>y._2.map(v=>(y._1,v._2,v._3))).map(f=>Row(f._1,f._2,f._3))
 
+//    itemBaseDataFrame.take(10).foreach(println)
+
     System.out.println("=================003 ITEM SIMI OK===========================")
 
     //DataFrame格式化申明
@@ -128,15 +158,15 @@ val HIVE_METASTORE_URIS = "thrift://hive-host-01:9083,thrift://hive-host-02:9083
     val schemaItemBase = StructType(schemaString.split(" ")
       .map(fieldName=>StructField(fieldName,if (fieldName.equals("score")) DoubleType else  LongType,true)))
     val movieItemBaseDataFrame = sparkSession.createDataFrame(itemBaseDataFrame,schemaItemBase)
+//    movieItemBaseDataFrame.show(100)
 
     //将结果存入hive
-    val itemBaseReTmpTableName = "mite_itembasetmp"
-    val itemBaseReTableName = "mite8.mite_item_base_re"
-
-    movieItemBaseDataFrame.registerTempTable(itemBaseReTmpTableName)
-    sparkSession.sql("insert into table " + itemBaseReTableName + " select * from " + itemBaseReTmpTableName)
-
+    movieItemBaseDataFrame.toDF().registerTempTable("table1")
+    sparkSession.sql("create table mite8.mite_item_base_re as select * from table1")
+    // repartition(1).toDF().
     System.out.println("=================006 SAVE OK===========================")
+
+    sc.stop()
 
   }
 

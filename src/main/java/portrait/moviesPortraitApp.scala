@@ -7,9 +7,6 @@ import scala.util.control.Breaks
 import scala.collection.JavaConversions._
 
 /**
-  * 作者：blogchong
-  * 公众号: 数据虫巢(ID:blogchong)
-  * 交流微信：mute88
   * Desc: 基于movies数据集，计算用户的兴趣元素画像标签
   */
 object moviesPortraitApp {

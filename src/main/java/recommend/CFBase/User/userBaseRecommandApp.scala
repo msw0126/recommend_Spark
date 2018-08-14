@@ -1,12 +1,10 @@
 package recommend.CFBase.User
 
+import org.apache.spark.SparkConf
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.{Row, SparkSession}
 
 /**
-  * 作者：blogchong
-  * 公众号: 数据虫巢(ID:blogchong)
-  * 交流微信：mute88
   * Desc: 基于User的协同过滤，对用户进行电影推荐
   */
 object userBaseRecommandApp {
@@ -14,24 +12,38 @@ object userBaseRecommandApp {
 
     //设置hive访问host以及端口  hadoop9
     //注意：实际使用的时候，替换成自己服务器集群中，hive的host以及访问端口
-val HIVE_METASTORE_URIS = "thrift://hive-host-01:9083,thrift://hive-host-02:9083"
-    System.setProperty("hive.metastore.uris", HIVE_METASTORE_URIS)
+//val HIVE_METASTORE_URIS = "thrift://hive-host-01:9083
+    System.setProperty("HADOOP_USER_NAME", "hdfs")
+    System.setProperty("java.util.Arrays.useLegacyMergeSort", "true")
 
     //构建一个通用的sparkSession
-    val sparkSession = SparkSession
-      .builder()
-      .appName("user-base-re")
+    //local 模式
+    val sparkConf = new SparkConf().setAppName("user-base-re").setMaster("local[*]")
+    val sparkSession = SparkSession.builder()
+      .config(sparkConf)
       .enableHiveSupport()
       .getOrCreate()
+    System.setProperty("spark.local.dir", "F:\\tools\\Spark\\SPARK_LOCAL_DIRS")
+    System.setProperty("hadoop.home.dir", "F:\\tools\\Spark\\hadoop-2.7.5\\")
+    // yarn 模式
+//    val sparkSession = SparkSession
+//      .builder()
+//      .appName("user-base-re")
+//      .enableHiveSupport()
+//      .getOrCreate()
+
+    val sc = sparkSession.sparkContext
 
     //获取rating评分数据集并转换为RDD,鉴于机器配置，降低数据量
     val ratingData = sparkSession.sql("select userid,movieid,rate  from mite8.mite_ratings limit 50000")
-      .rdd.map(f=>(java.lang.Long.parseLong(f.get(0).toString),java.lang.Long.parseLong(f.get(1).toString),f.get(2).asInstanceOf[java.math.BigDecimal].doubleValue()))
+      .rdd.map(f=>(java.lang.Long.parseLong(f.get(0).toString),java.lang.Long.parseLong(f.get(1).toString),scala.math.BigDecimal(f.get(2).toString).doubleValue()))
+//    ratingData.take(10).foreach(println)
 
     System.out.println("=================001 GET DATA OK===========================")
 
     //过滤多于的(user,item,rate),卡 (best-loved) 100上限，降低计算量
     val ratings = ratingData.groupBy(k=>k._1).flatMap(f=>f._2.toList.sortWith((f,y)=>f._3>y._3).take(100))
+//    ratings.take(10).foreach(println)
 
     //一个用户对应多个item
     val user2manyItem = ratings.groupBy(tup=>tup._1)
@@ -139,6 +151,8 @@ val HIVE_METASTORE_URIS = "thrift://hive-host-01:9083,thrift://hive-host-02:9083
     sparkSession.sql("insert into table " + itemBaseReTableName + " select * from " + itemBaseReTmpTableName)
 
     System.out.println("=================006 SAVE OK===========================")
+
+    sc.stop()
 
   }
 
